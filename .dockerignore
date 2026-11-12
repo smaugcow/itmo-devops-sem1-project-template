@@ -1,0 +1,5 @@
+.git
+.runtime
+.env
+*.zip
+sample_data

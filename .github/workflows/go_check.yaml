@@ -1,102 +1,109 @@
-name: Go Test Pipeline
-
+name: prices
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
-
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm_create:
+        description: create or reuse the configured paid VM
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: prices-${{ github.event_name == 'workflow_dispatch' && 'cloud' || github.ref }}
+  cancel-in-progress: false
 jobs:
   test:
-    name: Run Tests
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: project-sem-1
-          POSTGRES_USER: validator
-          POSTGRES_PASSWORD: val1dat0r
-        ports:
-          - 5432:5432
-        # Добавляем volume для сохранения данных
-        volumes:
-          - postgres_data:/var/lib/postgresql/data
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.23'
-
-    - name: Make scripts executable
-      run: |
-        chmod +x scripts/prepare.sh
-        chmod +x scripts/run.sh
-        chmod +x scripts/tests.sh
-
-    - name: Prepare environment
-      run: ./scripts/prepare.sh
-
-    - name: Run application
-      run: ./scripts/run.sh
-      env:
-        POSTGRES_HOST: localhost
-        POSTGRES_PORT: 5432
-        POSTGRES_DB: project-sem-1
-        POSTGRES_USER: validator
-        POSTGRES_PASSWORD: val1dat0r
-
-    - name: Test Level 1
-      id: test-level-1
-      continue-on-error: true
-      run: ./scripts/tests.sh 1
-      env:
-        POSTGRES_HOST: localhost
-        POSTGRES_PORT: 5432
-        POSTGRES_DB: project-sem-1
-        POSTGRES_USER: validator
-        POSTGRES_PASSWORD: val1dat0r
-
-    - name: Test Level 2
-      id: test-level-2
-      continue-on-error: true
-      run: ./scripts/tests.sh 2
-      env:
-        POSTGRES_HOST: localhost
-        POSTGRES_PORT: 5432
-        POSTGRES_DB: project-sem-1
-        POSTGRES_USER: validator
-        POSTGRES_PASSWORD: val1dat0r
-
-    - name: Test Level 3
-      id: test-level-3
-      continue-on-error: true
-      run: ./scripts/tests.sh 3
-      env:
-        POSTGRES_HOST: localhost
-        POSTGRES_PORT: 5432
-        POSTGRES_DB: project-sem-1
-        POSTGRES_USER: validator
-        POSTGRES_PASSWORD: val1dat0r
-
-    - name: Check test results
-      if: always()
-      run: |
-        if [[ "${{ steps.test-level-1.outcome }}" == "success" ]] || \
-           [[ "${{ steps.test-level-2.outcome }}" == "success" ]] || \
-           [[ "${{ steps.test-level-3.outcome }}" == "success" ]]; then
-          echo "At least one test level passed successfully!"
-          exit 0
-        else
-          echo "All test levels failed!"
-          exit 1
-        fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./... && go vet ./...
+      - run: bash -n scripts/prepare.sh scripts/run.sh scripts/install-docker.sh
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client zip unzip
+      - run: bash scripts/prepare.sh
+      - run: docker compose --project-name prices-ci up -d
+      - name: wait for API
+        run: |
+          ready=false
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://localhost:8080/health; then ready=true; break; fi
+            sleep 2
+          done
+          test "$ready" = true
+      - run: bash scripts/tests.sh 1
+      - run: bash scripts/tests.sh 2
+      - run: bash scripts/tests.sh 3
+      - if: always()
+        run: docker compose --project-name prices-ci down --volumes
+  cloud:
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm_create && github.ref == 'refs/heads/main'
+    needs: docker
+    runs-on: ubuntu-latest
+    env:
+      YC_PROFILE: final-project
+      YC_CLOUD_ID: ${{ vars.YC_CLOUD_ID }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      YC_SUBNET_ID: ${{ vars.YC_SUBNET_ID }}
+      YC_ZONE: ${{ vars.YC_ZONE }}
+      YC_SECURITY_GROUP_ID: ${{ vars.YC_SECURITY_GROUP_ID }}
+      VM_NAME: ${{ vars.VM_NAME }}
+      SSH_USER: ${{ vars.SSH_USER }}
+      CONFIRM_CREATE: 'yes'
+    steps:
+      - uses: actions/checkout@v4
+      - name: prepare credentials
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+        run: |
+          test -n "$YC_SA_JSON" && test -n "$SSH_PRIVATE_KEY" && test -n "$SSH_PUBLIC_KEY"
+          mkdir -p .runtime/credentials
+          chmod 700 .runtime/credentials
+          umask 077
+          printf '%s\n' "$YC_SA_JSON" > .runtime/credentials/sa.json
+          printf '%s\n' "$SSH_PRIVATE_KEY" > .runtime/credentials/key
+          printf '%s\n' "$SSH_PUBLIC_KEY" > .runtime/credentials/key.pub
+          echo "SSH_PRIVATE_KEY_FILE=$PWD/.runtime/credentials/key" >> "$GITHUB_ENV"
+          echo "SSH_PUBLIC_KEY_FILE=$PWD/.runtime/credentials/key.pub" >> "$GITHUB_ENV"
+      - name: install yc
+        run: |
+          mkdir -p .runtime/yc
+          curl --fail --silent --show-error https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz | tar -xz -C .runtime/yc
+          echo "$PWD/.runtime/yc" >> "$GITHUB_PATH"
+      - run: |
+          yc config profile create final-project
+          yc --profile final-project config set service-account-key "$PWD/.runtime/credentials/sa.json"
+      - run: bash scripts/prepare.sh
+      - name: provision and deploy
+        run: bash scripts/run.sh > .runtime/server-ip
+      - name: verify cloud API
+        run: |
+          ip=$(cat .runtime/server-ip)
+          curl --fail --silent "http://$ip:8080/health"
+          curl --fail --silent "http://$ip:8080/api/v0/prices" --output .runtime/prices.zip
+          unzip -t .runtime/prices.zip
+      - name: save resource receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-receipt
+          path: |
+            .runtime/server-ip
+            .runtime/n-*/instance-id
+          if-no-files-found: ignore
+      - name: remove credential files
+        if: always()
+        run: rm -f .runtime/credentials/sa.json .runtime/credentials/key .runtime/credentials/key.pub
