@@ -50,7 +50,10 @@ for attempt in $(seq 1 30); do
   sleep 5
 done
 [[ "$ready" == true ]]
-ssh "${ssh_options[@]}" "$ssh_user@$ip" 'sudo cloud-init status --wait >/dev/null && mkdir -p ~/prices' </dev/null
+cloud_init_exit=0
+ssh "${ssh_options[@]}" "$ssh_user@$ip" 'sudo cloud-init status --wait --format json' </dev/null > "$state_dir/cloud-init-status.json" || cloud_init_exit=$?
+python3 "$project_root/scripts/check_cloud_init.py" "$state_dir/cloud-init-status.json" "$cloud_init_exit"
+ssh "${ssh_options[@]}" "$ssh_user@$ip" 'mkdir -p ~/prices' </dev/null
 ssh "${ssh_options[@]}" "$ssh_user@$ip" 'bash -s' < "$project_root/scripts/install-docker.sh" >&2
 image=${APP_IMAGE:-final-prices:local}
 [[ "$image" =~ ^[a-zA-Z0-9_./:-]+$ ]]

@@ -25,6 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./... && go vet ./...
+      - run: python3 -m unittest discover -s scripts -p "test_*.py"
       - run: bash -n scripts/prepare.sh scripts/run.sh scripts/install-docker.sh
   docker:
     needs: test
