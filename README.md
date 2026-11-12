@@ -31,7 +31,7 @@ VM_NAME имеет вид n-UUID и сохраняется для повторн
 
 существующая security group должна разрешать SSH 22 и API 8080, PostgreSQL наружу не публикуется, скрипт не меняет правила сети и не подключает сервисный аккаунт к ВМ
 
-CI на push и PR проверяет Go, Docker и неизменённые официальные тесты всех трёх уровней, cloud job запускается отдельно через workflow_dispatch с confirm_create=true только из main
+CI на push и PR проверяет Go, Docker и неизменённые официальные тесты всех трёх уровней, cloud job проверяет API и запускает неизменённые тесты сложного уровня на новой ВМ через SSH, запускается отдельно через workflow_dispatch с confirm_create=true только из main
 
 для cloud job нужны secrets YC_SA_JSON и SSH_PRIVATE_KEY, variables YC_CLOUD_ID, YC_FOLDER_ID, YC_SUBNET_ID, YC_ZONE, YC_SECURITY_GROUP_ID, VM_NAME, SSH_USER и SSH_PUBLIC_KEY, JSON авторизованного ключа сервисного аккаунта вводится только в secrets
 
